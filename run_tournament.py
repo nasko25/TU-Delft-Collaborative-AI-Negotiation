@@ -17,9 +17,11 @@ tournament_settings = {
         "agents.conceder_agent.conceder_agent.ConcederAgent",
         "agents.hardliner_agent.hardliner_agent.HardlinerAgent",
         "agents.linear_agent.linear_agent.LinearAgent",
-        "agents.random_agent.random_agent.RandomAgent",
+        "agents.Group3_NegotiationAssignment_Agent.Group3_NegotiationAssignment_Agent.RandomAgent",
         "agents.stupid_agent.stupid_agent.StupidAgent",
-        "agents.template_agent.template_agent.TemplateAgent",
+        "agents.template_agent.agent_gosho.AgentGosho",
+        "agents.template_agent.agent_bat_gosho.AgentBatGosho",
+
     ],
     "profile_sets": [
         ["domains/domain00/profileA.json", "domains/domain00/profileB.json"],

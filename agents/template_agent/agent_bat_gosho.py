@@ -1,11 +1,9 @@
 import logging
-from random import randint
 from typing import cast
 
 from geniusweb.actions.Accept import Accept
 from geniusweb.actions.Action import Action
 from geniusweb.actions.Offer import Offer
-from geniusweb.actions.PartyId import PartyId
 from geniusweb.bidspace.AllBidsList import AllBidsList
 from geniusweb.inform.ActionDone import ActionDone
 from geniusweb.inform.Finished import Finished
@@ -13,19 +11,14 @@ from geniusweb.inform.Inform import Inform
 from geniusweb.inform.Settings import Settings
 from geniusweb.inform.YourTurn import YourTurn
 from geniusweb.issuevalue.Bid import Bid
-from geniusweb.issuevalue.Domain import Domain
-from geniusweb.issuevalue.Value import Value
-from geniusweb.issuevalue.ValueSet import ValueSet
 from geniusweb.party.Capabilities import Capabilities
 from geniusweb.party.DefaultParty import DefaultParty
-from geniusweb.profile.utilityspace.UtilitySpace import UtilitySpace
 from geniusweb.profileconnection.ProfileConnectionFactory import (
     ProfileConnectionFactory,
 )
 from geniusweb.progress.ProgressRounds import ProgressRounds
 
-
-class TemplateAgent(DefaultParty):
+class AgentBatGosho(DefaultParty):
     """
     Template agent that offers random bids until a bid with sufficient utility is offered.
     """
@@ -35,6 +28,8 @@ class TemplateAgent(DefaultParty):
         self.getReporter().log(logging.INFO, "party is initialized")
         self._profile = None
         self._last_received_bid: Bid = None
+        self.latest_bid: Bid = None
+        self.all_bids = []
 
     def notifyChange(self, info: Inform):
         """This is the entry point of all interaction with your agent after is has been initialised.
@@ -107,14 +102,19 @@ class TemplateAgent(DefaultParty):
 
     # execute a turn
     def _myTurn(self):
+        profile = self._profile.getProfile()
         # check if the last received offer if the opponent is good enough
         if self._isGood(self._last_received_bid):
             # if so, accept the offer
             action = Accept(self._me, self._last_received_bid)
         else:
             # if not, find a bid to propose as counter offer
+
             bid = self._findBid()
             action = Offer(self._me, bid)
+            self.latest_bid = bid
+            if self._last_received_bid is not None:
+                self.all_bids.append((self._last_received_bid, profile.getUtility(self._last_received_bid)))
 
         # send the action
         self.getConnection().send(action)
@@ -123,22 +123,129 @@ class TemplateAgent(DefaultParty):
     def _isGood(self, bid: Bid) -> bool:
         if bid is None:
             return False
+
+        if self.latest_bid is None:
+            self.latest_bid = self.get_highest_bid()
+
         profile = self._profile.getProfile()
 
-        progress = self._progress.get(0)
+        bid_utility_sent = profile.getUtility(self.latest_bid)
+        bid_utility_received = profile.getUtility(bid)
+
+        if bid_utility_received >= 0.95 * float(bid_utility_sent):
+            print("Accepted Bid-----------------------------1", bid)
+            return True
+        # elif bid_utility_received >= 0.9 * float(bid_utility_sent):
+        #     print("Accepted Bid-----------------------------2", bid)
+        #     return True
 
         # very basic approach that accepts if the offer is valued above 0.6 and
         # 80% of the rounds towards the deadline have passed
-        return profile.getUtility(bid) > 0.6 and progress > 0.8
+        return False
 
     def _findBid(self) -> Bid:
-        # compose a list of all possible bids
+        progress = self._progress.get(0)
+        opponent_desired_bid = self.get_opponent_info()
+
+        # All utility values
+        utilities = self._profile.getProfile().getUtilities()
+
+        not_important_issues, middle_issues = self.not_important_issues()
+        # print(not_important_issues, "Not important issues")
+        # print(middle_issues, "Middle issues")
+
+        if self._last_received_bid is not None:
+            # Values for issues
+            opponent_issues = self._last_received_bid.getIssueValues()
+            last_values = self.latest_bid.getIssueValues()
+
+            bid_issues = {}
+            for issue in opponent_issues:
+                # get the value for issue
+                # value = opponent_issues.get(issue)
+                # float(utilities.get(issue).getUtility(opponent_issues.get(issue))) < 0.5:
+
+                if issue in not_important_issues and opponent_desired_bid is not None:
+                    bid_issues[issue] = opponent_desired_bid[issue]
+                else:
+                    suggested_val = (1 - progress/3) * float(utilities.get(issue).getUtility(last_values.get(issue)))
+                    bid_issues[issue] = self.search_for_value(suggested_val, issue)
+
+            # print(bid_issues, "Bidding")
+            bid = Bid(bid_issues)
+            # print("Bid utility------------", self._profile.getProfile().getUtility(bid))
+        else:
+            self.latest_bid = self.get_highest_bid()
+            bid = self.get_highest_bid()
+
+        return bid
+
+    def get_highest_bid(self):
         domain = self._profile.getProfile().getDomain()
         all_bids = AllBidsList(domain)
 
-        # take 50 attempts at finding a random bid that is acceptable to us
-        for _ in range(50):
-            bid = all_bids.get(randint(0, all_bids.size() - 1))
-            if self._isGood(bid):
-                break
-        return bid
+        bids_with_utility = []
+
+        for bid in all_bids:
+            bids_with_utility.append((bid, self._profile.getProfile().getUtility(bid)))
+
+        bids_with_utility = sorted(bids_with_utility, key=lambda item: -item[1])
+        return bids_with_utility[0][0]
+
+    def search_for_value(self, val, issue):
+        max_val = 1
+        desired_value = ""
+        utilities = self._profile.getProfile().getUtilities()
+        domain = self._profile.getProfile().getDomain().getValues(issue)
+        for v in domain:
+            value = utilities.get(issue).getUtility(v)
+            if val <= value and value <= max_val:
+                desired_value = v
+                max_val = value
+        return desired_value
+
+    def get_opponent_info(self):
+        prev_bids = self.all_bids
+
+        if len(prev_bids) < 10:
+            return None
+
+        # prev_bids.sort(key=lambda x: x[1])
+        issues = self._last_received_bid.getIssues()
+
+        demanded_best_offer = {}
+        for issue in issues:
+            issue_value_opponent = {}
+            for i in range(len(prev_bids)):
+                bid = prev_bids[i][0]
+                val = bid.getValue(issue)
+                if val in issue_value_opponent:
+                    issue_value_opponent[val] = issue_value_opponent[val] + 1
+                else:
+                    issue_value_opponent[val] = 1
+
+            sorted_dict = dict(sorted(issue_value_opponent.items(), key=lambda item: item[1]))
+            opponent_val = list(sorted_dict.keys())[-1]
+            demanded_best_offer[issue] = opponent_val
+
+        return demanded_best_offer
+
+    def not_important_issues(self):
+        domain = self._profile.getProfile().getDomain()
+        issues = domain.getIssues()
+        weights = []
+        not_important_issues = []
+        middle_issues = []
+
+        for issue in issues:
+            # Weight by issue
+            weights.append(self._profile.getProfile().getWeight(issue))
+
+        for issue in issues:
+            w = self._profile.getProfile().getWeight(issue)
+            if w < 0.15 * float(max(weights)):
+                not_important_issues.append(issue)
+            elif w < 0.5 * float(max(weights)):
+                middle_issues.append(issue)
+
+        return not_important_issues, middle_issues
